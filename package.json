@@ -1,0 +1,20 @@
+{
+  "name": "cosmic-strikes",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "install-all": "npm install && npm install --prefix backend && npm install --prefix frontend",
+    "dev": "concurrently \"npm run dev --prefix backend\" \"npm run dev --prefix frontend\"",
+    "dev:frontend": "npm run dev --prefix frontend",
+    "dev:backend": "npm run dev --prefix backend",
+    "build": "cd frontend && npm run build",
+    "build:all": "cd frontend && npm install && npm run build && cd ../backend && npm install && npm run build",
+    "vercel-build": "cd frontend && npm install && npm run build"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
