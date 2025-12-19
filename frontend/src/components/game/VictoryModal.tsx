@@ -1,10 +1,10 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAppDispatch, useAppSelector } from '../../store';
 import { reset, setGameStatus, continueAfterVictory } from '../../features/game';
 import { setHighScore } from '../../features/profileSlice';
 import { useAuth } from '../../hooks/useAuth';
-import { api } from '../../lib/api';
+import { api, GameStats, LeaderboardEntry } from '../../lib/api';
 
 /**
  * 🏆 VICTORY MODAL
@@ -12,6 +12,9 @@ import { api } from '../../lib/api';
  * - Minor (L10): "Sector Cleared" - Can continue playing
  * - Major (L50): "Elite Sector" title - Can continue playing
  * - Ultimate (L100): "Cosmic Savior" + End credits - Final victory
+ * 
+ * Features comprehensive stats display, leaderboard persistence,
+ * and displays current global high score from leaderboard.
  */
 const VictoryModal: React.FC = () => {
     const dispatch = useAppDispatch();
@@ -26,17 +29,46 @@ const VictoryModal: React.FC = () => {
         victoryType,
         victoryTitle,
         totalKills,
-        maxCombo
+        maxCombo,
+        shotsFired,
+        shotsHit,
+        gameStartTime,
+        powerUpsCollected,
+        wavesCompleted,
+        difficultyBracket,
+        difficultyMode
     } = useAppSelector((state) => state.game);
     const { highScore, settings } = useAppSelector((state) => state.profile);
 
     const [submitting, setSubmitting] = useState(false);
     const [submitted, setSubmitted] = useState(false);
+    const [submitError, setSubmitError] = useState<string | null>(null);
+    const [serverHighScore, setServerHighScore] = useState<boolean>(false);
     const [showCredits, setShowCredits] = useState(false);
+
+    // Leaderboard state - fetch global high score
+    const [topScore, setTopScore] = useState<LeaderboardEntry | null>(null);
+    const [loadingLeaderboard, setLoadingLeaderboard] = useState(false);
+
+    // Calculate derived stats
+    const accuracy = useMemo(() => {
+        if (shotsFired === 0) return 0;
+        return Math.round((shotsHit / shotsFired) * 100);
+    }, [shotsFired, shotsHit]);
+
+    const playTimeSeconds = useMemo(() => {
+        return Math.round((Date.now() - gameStartTime) / 1000);
+    }, [gameStartTime]);
+
+    const playTimeFormatted = useMemo(() => {
+        const minutes = Math.floor(playTimeSeconds / 60);
+        const seconds = playTimeSeconds % 60;
+        return `${minutes}:${seconds.toString().padStart(2, '0')}`;
+    }, [playTimeSeconds]);
 
     const isNewRecord = score > highScore;
 
-    // Submit score on victory
+    // Submit comprehensive game stats on victory
     useEffect(() => {
         if (status === 'victory' && victoryType) {
             if (isNewRecord) {
@@ -45,20 +77,73 @@ const VictoryModal: React.FC = () => {
 
             if (isAuthenticated && !submitted) {
                 setSubmitting(true);
-                api.submitScore(score, level, settings?.difficulty || 'normal', 0)
-                    .then(() => setSubmitted(true))
-                    .catch(console.error)
+                setSubmitError(null);
+
+                const gameStats: GameStats = {
+                    score,
+                    level,
+                    wave,
+                    difficulty: settings?.difficulty || difficultyMode || 'normal',
+                    totalKills,
+                    maxCombo,
+                    accuracy,
+                    playTimeSeconds,
+                    shotsFired,
+                    shotsHit,
+                    powerUpsCollected,
+                    wavesCompleted,
+                    difficultyBracket
+                };
+
+                api.submitGameStats(gameStats)
+                    .then((result) => {
+                        setSubmitted(true);
+                        setServerHighScore(result.newHighScore);
+                    })
+                    .catch((err) => {
+                        // Fallback to legacy submitScore
+                        api.submitScore(score, level, settings?.difficulty || 'normal', accuracy)
+                            .then((result) => {
+                                setSubmitted(true);
+                                setServerHighScore(result.newHighScore);
+                            })
+                            .catch((fallbackErr) => {
+                                setSubmitError(fallbackErr.message || 'Failed to submit score');
+                            });
+                    })
                     .finally(() => setSubmitting(false));
             }
         }
-    }, [status, victoryType, score, level, isNewRecord, dispatch, isAuthenticated, submitted, settings?.difficulty]);
+    }, [status, victoryType, score, level, wave, isNewRecord, dispatch, isAuthenticated, submitted, settings?.difficulty, difficultyMode, totalKills, maxCombo, accuracy, playTimeSeconds, shotsFired, shotsHit, powerUpsCollected, wavesCompleted, difficultyBracket]);
 
     // Reset on leave
     useEffect(() => {
         if (status === 'playing') {
             setSubmitted(false);
+            setServerHighScore(false);
+            setSubmitError(null);
+            setTopScore(null);
         }
     }, [status]);
+
+    // Fetch leaderboard to show global high score when victory
+    useEffect(() => {
+        if (status === 'victory' && victoryType) {
+            setLoadingLeaderboard(true);
+            api.getLeaderboard(1)
+                .then((result) => {
+                    if (result.leaderboard.length > 0) {
+                        setTopScore(result.leaderboard[0]);
+                    }
+                })
+                .catch((err) => {
+                    console.error('Failed to fetch leaderboard:', err);
+                })
+                .finally(() => {
+                    setLoadingLeaderboard(false);
+                });
+        }
+    }, [status, victoryType]);
 
     if (status !== 'victory' || !victoryType) return null;
 
@@ -75,6 +160,12 @@ const VictoryModal: React.FC = () => {
         dispatch(reset());
         dispatch(setGameStatus('idle'));
         navigate('/');
+    };
+
+    const handleViewLeaderboard = () => {
+        dispatch(reset());
+        dispatch(setGameStatus('idle'));
+        navigate('/leaderboard');
     };
 
     // Victory configurations
@@ -191,29 +282,49 @@ const VictoryModal: React.FC = () => {
                     </p>
 
                     {/* Stats */}
-                    <div className="flex justify-center gap-6 mb-6">
-                        <div className="text-center">
-                            <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider">Level</p>
-                            <p className="text-xl font-orbitron font-bold" style={{ color: config.color }}>{level}</p>
+                    <div className="grid grid-cols-3 gap-3 mb-4">
+                        <div className="p-2 rounded-lg bg-[var(--bg-primary)] border border-[var(--border-primary)]">
+                            <p className="text-[9px] text-[var(--text-muted)] uppercase tracking-wider">Level</p>
+                            <p className="text-lg font-orbitron font-bold" style={{ color: config.color }}>{level}</p>
                         </div>
-                        <div className="text-center">
-                            <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider">Kills</p>
-                            <p className="text-xl font-orbitron font-bold text-green-400">{totalKills}</p>
+                        <div className="p-2 rounded-lg bg-[var(--bg-primary)] border border-[var(--border-primary)]">
+                            <p className="text-[9px] text-[var(--text-muted)] uppercase tracking-wider">Kills</p>
+                            <p className="text-lg font-orbitron font-bold text-green-400">{totalKills}</p>
                         </div>
-                        <div className="text-center">
-                            <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider">Max Combo</p>
-                            <p className="text-xl font-orbitron font-bold text-yellow-400">x{maxCombo}</p>
+                        <div className="p-2 rounded-lg bg-[var(--bg-primary)] border border-[var(--border-primary)]">
+                            <p className="text-[9px] text-[var(--text-muted)] uppercase tracking-wider">Combo</p>
+                            <p className="text-lg font-orbitron font-bold text-yellow-400">x{maxCombo}</p>
+                        </div>
+                    </div>
+
+                    {/* Secondary Stats */}
+                    <div className="grid grid-cols-4 gap-2 mb-6">
+                        <div className="p-2 rounded-lg bg-[var(--bg-primary)]/50 border border-[var(--border-divider)]">
+                            <p className="text-[8px] text-[var(--text-muted)] uppercase">Accuracy</p>
+                            <p className="text-sm font-bold font-orbitron text-cyan-400">{accuracy}%</p>
+                        </div>
+                        <div className="p-2 rounded-lg bg-[var(--bg-primary)]/50 border border-[var(--border-divider)]">
+                            <p className="text-[8px] text-[var(--text-muted)] uppercase">Waves</p>
+                            <p className="text-sm font-bold font-orbitron text-[var(--text-primary)]">{wavesCompleted}</p>
+                        </div>
+                        <div className="p-2 rounded-lg bg-[var(--bg-primary)]/50 border border-[var(--border-divider)]">
+                            <p className="text-[8px] text-[var(--text-muted)] uppercase">Time</p>
+                            <p className="text-sm font-bold font-orbitron text-[var(--text-primary)]">{playTimeFormatted}</p>
+                        </div>
+                        <div className="p-2 rounded-lg bg-[var(--bg-primary)]/50 border border-[var(--border-divider)]">
+                            <p className="text-[8px] text-[var(--text-muted)] uppercase">Power-Ups</p>
+                            <p className="text-sm font-bold font-orbitron text-purple-400">{powerUpsCollected}</p>
                         </div>
                     </div>
 
                     {/* Score */}
-                    <div className="py-6 px-4 rounded-xl bg-[var(--bg-tertiary)] border border-[var(--border-primary)] mb-8">
-                        {isNewRecord && (
+                    <div className="py-6 px-4 rounded-xl bg-[var(--bg-tertiary)] border border-[var(--border-primary)] mb-6">
+                        {(isNewRecord || serverHighScore) && (
                             <div
                                 className="inline-block px-3 py-1 text-[10px] font-bold uppercase tracking-widest rounded-full mb-2 animate-pulse"
                                 style={{ backgroundColor: config.color, color: 'black' }}
                             >
-                                🏆 New High Score!
+                                {serverHighScore ? '🏆 New Global High Score!' : '⭐ New Personal Best!'}
                             </div>
                         )}
                         <p className="text-xs text-[var(--text-secondary)] font-bold uppercase mb-1">Final Score</p>
@@ -221,11 +332,54 @@ const VictoryModal: React.FC = () => {
                             {score.toLocaleString()}
                         </p>
 
-                        {submitting && (
-                            <p className="text-xs text-gray-500 mt-2 animate-pulse">Syncing score...</p>
+                        {/* Score comparison section */}
+                        <div className="mt-3 flex justify-center gap-4 text-xs">
+                            {!isNewRecord && (
+                                <div className="text-[var(--text-muted)]">
+                                    Your Best: <span className="text-[var(--text-primary)] font-bold">{highScore.toLocaleString()}</span>
+                                </div>
+                            )}
+                            {topScore && (
+                                <div className="text-[var(--text-muted)]">
+                                    {loadingLeaderboard ? (
+                                        <span className="animate-pulse">Loading top score...</span>
+                                    ) : (
+                                        <>
+                                            🏆 Global #1: <span className="text-[var(--brand-accent)] font-bold">{topScore.highScore.toLocaleString()}</span>
+                                            <span className="text-[var(--text-muted)]"> by {topScore.username}</span>
+                                        </>
+                                    )}
+                                </div>
+                            )}
+                        </div>
+
+                        {/* Submission Status */}
+                        {isAuthenticated && (
+                            <div className="mt-3 pt-3 border-t border-[var(--border-divider)]">
+                                {submitting && (
+                                    <div className="flex items-center justify-center gap-2 text-xs text-[var(--text-muted)]">
+                                        <span className="material-icons text-sm animate-spin">sync</span>
+                                        Syncing to leaderboard...
+                                    </div>
+                                )}
+                                {submitted && !submitError && (
+                                    <div className="flex items-center justify-center gap-2 text-xs text-green-400">
+                                        <span className="material-icons text-sm">cloud_done</span>
+                                        Stats saved to leaderboard
+                                    </div>
+                                )}
+                                {submitError && (
+                                    <div className="flex items-center justify-center gap-2 text-xs text-red-400">
+                                        <span className="material-icons text-sm">error_outline</span>
+                                        {submitError}
+                                    </div>
+                                )}
+                            </div>
                         )}
-                        {submitted && (
-                            <p className="text-xs text-green-400 mt-2">✓ Score saved to leaderboard</p>
+                        {!isAuthenticated && (
+                            <p className="text-xs text-[var(--text-muted)] mt-3 pt-3 border-t border-[var(--border-divider)]">
+                                🔑 Log in to save your score to the leaderboard
+                            </p>
                         )}
                     </div>
 
@@ -259,16 +413,25 @@ const VictoryModal: React.FC = () => {
 
                         <button
                             onClick={handleRetry}
-                            className="w-full py-3 rounded-xl border border-[var(--border-primary)] bg-transparent text-[var(--text-secondary)] font-bold hover:bg-[var(--bg-tertiary)] transition-all"
+                            className="w-full py-3 rounded-xl border border-[var(--border-primary)] bg-transparent text-[var(--text-secondary)] font-bold hover:bg-[var(--bg-tertiary)] transition-all flex items-center justify-center gap-2"
                         >
+                            <span className="material-icons text-lg">refresh</span>
                             NEW GAME
                         </button>
 
                         <button
-                            onClick={handleQuit}
-                            className="w-full py-3 rounded-xl text-[var(--text-muted)] font-medium hover:text-white transition-all"
+                            onClick={handleViewLeaderboard}
+                            className="w-full py-3 rounded-xl border border-[var(--border-accent)] bg-transparent text-[var(--brand-accent)] font-bold hover:bg-[var(--brand-accent)]/10 transition-all flex items-center justify-center gap-2"
                         >
-                            RETURN TO BASE
+                            <span className="material-icons text-lg">leaderboard</span>
+                            VIEW LEADERBOARD
+                        </button>
+
+                        <button
+                            onClick={handleQuit}
+                            className="w-full py-2.5 rounded-xl text-[var(--text-muted)] font-medium hover:text-white transition-all"
+                        >
+                            RETURN TO MAIN MENU
                         </button>
                     </div>
                 </div>

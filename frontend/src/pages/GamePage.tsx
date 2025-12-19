@@ -39,6 +39,7 @@ import HUD from '../components/game/HUD'; //
 import WaveTransition from '../components/game/WaveTransition'; //
 import WaveNotification from '../components/game/WaveNotification'; //
 import VictoryModal from '../components/game/VictoryModal'; //
+import GameOverModal from '../components/game/GameOverModal'; //
 import ComboIndicator from '../components/game/ComboIndicator'; //
 
 const GamePage: React.FC = () => {
@@ -766,6 +767,9 @@ const GamePage: React.FC = () => {
 
         {/* 🏆 VICTORY MODAL */}
         {status === 'victory' && <VictoryModal />}
+
+        {/* 💀 GAME OVER MODAL */}
+        {status === 'gameOver' && <GameOverModal />}
       </div>
     </div>
   );

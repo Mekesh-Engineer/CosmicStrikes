@@ -98,6 +98,15 @@ export interface GameState {
   // ═══════════════════════════════════════════════════
   showWaveNotification: boolean;
   waveNotificationData: { wave: number; level: number; bossName?: string } | null;
+  
+  // ═══════════════════════════════════════════════════
+  // 📊 GAME SESSION STATS (for leaderboard)
+  // ═══════════════════════════════════════════════════
+  shotsFired: number;        // Total bullets fired
+  shotsHit: number;          // Bullets that hit enemies
+  gameStartTime: number;     // Timestamp when game started
+  powerUpsCollected: number; // Total power-ups collected
+  wavesCompleted: number;    // Total waves completed
 }
 
 const initialState: GameState = {
@@ -148,6 +157,13 @@ const initialState: GameState = {
   // Wave notification
   showWaveNotification: false,
   waveNotificationData: null,
+  
+  // Game session stats
+  shotsFired: 0,
+  shotsHit: 0,
+  gameStartTime: Date.now(),
+  powerUpsCollected: 0,
+  wavesCompleted: 0,
 };
 
 // Alien type rewards mapping
@@ -206,21 +222,24 @@ const gameSlice = createSlice({
       const hasDoubleBullets = state.activePowerUps.some(p => p.type === 'doubleBullets');
       
       if (hasSpreadShot) {
-        // 3-way spread shot
+        // 3-way spread shot - counts as 3 shots
         state.bullets.push(
           { id: id + '-left', x: state.playerX - 0.2, y: state.playerY + 0.5, vx: -0.05, vy: 0.15 },
           { id: id + '-center', x: state.playerX, y: state.playerY + 0.5, vx: 0, vy: 0.15 },
           { id: id + '-right', x: state.playerX + 0.2, y: state.playerY + 0.5, vx: 0.05, vy: 0.15 }
         );
+        state.shotsFired += 3;
       } else if (hasDoubleBullets) {
-        // Double bullets side-by-side
+        // Double bullets side-by-side - counts as 2 shots
         state.bullets.push(
           { id: id + '-left', x: state.playerX - 0.1, y: state.playerY + 0.5, vx: 0, vy: 0.15 },
           { id: id + '-right', x: state.playerX + 0.1, y: state.playerY + 0.5, vx: 0, vy: 0.15 }
         );
+        state.shotsFired += 2;
       } else {
         // Single bullet
         state.bullets.push({ id, x: state.playerX, y: state.playerY + 0.5, vx: 0, vy: 0.15 });
+        state.shotsFired += 1;
       }
     },
     // Optimized alien spawning with limit enforcement
@@ -373,6 +392,7 @@ const gameSlice = createSlice({
           
           if (distSq < hitRadiusSq) {
             bulletsToRemove.add(b.id);
+            state.shotsHit += 1; // Track successful hits
             
             // Reduce HP
             const alienIndex = state.aliens.findIndex(alien => alien.id === a.id);
@@ -422,6 +442,7 @@ const gameSlice = createSlice({
           
           if (reward.powerUp === 'shield') {
             state.lives = Math.min(3, state.lives + 1);
+            state.powerUpsCollected += 1; // Track shield as power-up
           } else {
             const existingIndex = state.activePowerUps.findIndex(p => p.type === reward.powerUp);
             if (existingIndex >= 0) {
@@ -429,6 +450,7 @@ const gameSlice = createSlice({
             } else {
               state.activePowerUps.push({ type: reward.powerUp, expiresAt });
             }
+            state.powerUpsCollected += 1; // Track power-up collection
           }
         }
         
@@ -540,6 +562,7 @@ const gameSlice = createSlice({
       state.waveStartTime = Date.now();
       state.lastShotTime = Date.now();
       state.missWindowStart = Date.now();
+      state.gameStartTime = Date.now(); // Reset game start time for accurate play time tracking
     },
     setGameStatus(state, action: PayloadAction<GameState['status']>) {
       state.status = action.payload;
@@ -570,6 +593,7 @@ const gameSlice = createSlice({
       
       // Award wave clear bonus
       state.score += getWaveClearBonus(currentWave, state.level);
+      state.wavesCompleted += 1; // Track wave completion
       
       if (currentWave >= 5) {
         // Level complete - check for boss level

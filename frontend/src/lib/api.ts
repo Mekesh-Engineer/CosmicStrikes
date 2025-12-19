@@ -52,6 +52,23 @@ export interface ScoreSubmitResponse {
   message: string;
 }
 
+// Extended game stats for leaderboard submission
+export interface GameStats {
+  score: number;
+  level: number;
+  wave: number;
+  difficulty: string;
+  totalKills: number;
+  maxCombo: number;
+  accuracy: number;        // 0-100 percentage
+  playTimeSeconds: number; // Duration in seconds
+  shotsFired: number;
+  shotsHit: number;
+  powerUpsCollected: number;
+  wavesCompleted: number;
+  difficultyBracket: string;
+}
+
 export interface ScoreHistoryEntry {
   score: number;
   level: number;
@@ -199,6 +216,7 @@ class ApiClient {
   // Score Endpoints
   // ========================================
 
+  // Legacy submitScore for backward compatibility
   async submitScore(
     score: number, 
     level: number, 
@@ -208,6 +226,14 @@ class ApiClient {
     return this.request<ScoreSubmitResponse>('/api/scores', {
       method: 'POST',
       body: JSON.stringify({ score, level, difficulty, accuracy }),
+    });
+  }
+
+  // Enhanced score submission with full game stats
+  async submitGameStats(stats: GameStats): Promise<ScoreSubmitResponse> {
+    return this.request<ScoreSubmitResponse>('/api/scores', {
+      method: 'POST',
+      body: JSON.stringify(stats),
     });
   }
 
