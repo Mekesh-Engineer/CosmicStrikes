@@ -41,6 +41,7 @@ export interface LeaderboardEntry {
   userId: string;
   username: string;
   avatar?: string;
+  score: number;
   highScore: number;
   totalGames: number;
 }
@@ -210,6 +211,24 @@ class ApiClient {
       this.setToken(null);
       return null;
     }
+  }
+
+  async requestPasswordReset(email: string): Promise<{ ok: boolean; message: string; token?: string }> {
+    return this.request<{ ok: boolean; message: string; token?: string }>('/api/auth/forgot-password', {
+      method: 'POST',
+      body: JSON.stringify({ email }),
+    });
+  }
+
+  async validateResetToken(token: string): Promise<{ valid: boolean }> {
+    return this.request<{ valid: boolean }>(`/api/auth/validate-reset-token/${token}`);
+  }
+
+  async resetPassword(token: string, password: string): Promise<{ ok: boolean; message: string }> {
+    return this.request<{ ok: boolean; message: string }>('/api/auth/reset-password', {
+      method: 'POST',
+      body: JSON.stringify({ token, password }),
+    });
   }
 
   // ========================================

@@ -12,7 +12,7 @@
     "vercel-build": "cd frontend && npm install && npm run build"
   },
   "devDependencies": {
-    "concurrently": "^8.2.2"
+    "concurrently": "^9.1.0"
   },
   "engines": {
     "node": ">=18.0.0"

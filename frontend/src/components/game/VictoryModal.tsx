@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useMemo } from 'react';
+import React, { useEffect, useState, useMemo, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAppDispatch, useAppSelector } from '../../store';
 import { reset, setGameStatus, continueAfterVictory } from '../../features/game';
@@ -50,15 +50,24 @@ const VictoryModal: React.FC = () => {
     const [topScore, setTopScore] = useState<LeaderboardEntry | null>(null);
     const [loadingLeaderboard, setLoadingLeaderboard] = useState(false);
 
+    // Refs to prevent race conditions and stale state updates
+    const isSubmittingRef = useRef(false);
+    const isMountedRef = useRef(true);
+    const capturedPlayTimeRef = useRef<number | null>(null);
+
     // Calculate derived stats
     const accuracy = useMemo(() => {
         if (shotsFired === 0) return 0;
         return Math.round((shotsHit / shotsFired) * 100);
     }, [shotsFired, shotsHit]);
 
+    // Capture play time once when victory occurs (not on every render)
     const playTimeSeconds = useMemo(() => {
-        return Math.round((Date.now() - gameStartTime) / 1000);
-    }, [gameStartTime]);
+        if (status === 'victory' && capturedPlayTimeRef.current === null) {
+            capturedPlayTimeRef.current = Math.round((Date.now() - gameStartTime) / 1000);
+        }
+        return capturedPlayTimeRef.current ?? Math.round((Date.now() - gameStartTime) / 1000);
+    }, [status, gameStartTime]);
 
     const playTimeFormatted = useMemo(() => {
         const minutes = Math.floor(playTimeSeconds / 60);
@@ -68,6 +77,14 @@ const VictoryModal: React.FC = () => {
 
     const isNewRecord = score > highScore;
 
+    // Track component mount status for cleanup
+    useEffect(() => {
+        isMountedRef.current = true;
+        return () => {
+            isMountedRef.current = false;
+        };
+    }, []);
+
     // Submit comprehensive game stats on victory
     useEffect(() => {
         if (status === 'victory' && victoryType) {
@@ -75,7 +92,9 @@ const VictoryModal: React.FC = () => {
                 dispatch(setHighScore(score));
             }
 
-            if (isAuthenticated && !submitted) {
+            // Use ref to prevent duplicate submissions
+            if (isAuthenticated && !submitted && !isSubmittingRef.current) {
+                isSubmittingRef.current = true;
                 setSubmitting(true);
                 setSubmitError(null);
 
@@ -95,23 +114,35 @@ const VictoryModal: React.FC = () => {
                     difficultyBracket
                 };
 
-                api.submitGameStats(gameStats)
-                    .then((result) => {
-                        setSubmitted(true);
-                        setServerHighScore(result.newHighScore);
-                    })
-                    .catch((err) => {
+                const submitStats = async () => {
+                    try {
+                        const result = await api.submitGameStats(gameStats);
+                        if (isMountedRef.current) {
+                            setSubmitted(true);
+                            setServerHighScore(result.newHighScore);
+                        }
+                    } catch (err) {
                         // Fallback to legacy submitScore
-                        api.submitScore(score, level, settings?.difficulty || 'normal', accuracy)
-                            .then((result) => {
+                        try {
+                            const fallbackResult = await api.submitScore(score, level, settings?.difficulty || 'normal', accuracy);
+                            if (isMountedRef.current) {
                                 setSubmitted(true);
-                                setServerHighScore(result.newHighScore);
-                            })
-                            .catch((fallbackErr) => {
+                                setServerHighScore(fallbackResult.newHighScore);
+                            }
+                        } catch (fallbackErr: any) {
+                            if (isMountedRef.current) {
                                 setSubmitError(fallbackErr.message || 'Failed to submit score');
-                            });
-                    })
-                    .finally(() => setSubmitting(false));
+                            }
+                        }
+                    } finally {
+                        if (isMountedRef.current) {
+                            setSubmitting(false);
+                        }
+                        isSubmittingRef.current = false;
+                    }
+                };
+
+                submitStats();
             }
         }
     }, [status, victoryType, score, level, wave, isNewRecord, dispatch, isAuthenticated, submitted, settings?.difficulty, difficultyMode, totalKills, maxCombo, accuracy, playTimeSeconds, shotsFired, shotsHit, powerUpsCollected, wavesCompleted, difficultyBracket]);
@@ -123,6 +154,8 @@ const VictoryModal: React.FC = () => {
             setServerHighScore(false);
             setSubmitError(null);
             setTopScore(null);
+            isSubmittingRef.current = false;
+            capturedPlayTimeRef.current = null;
         }
     }, [status]);
 
@@ -132,7 +165,7 @@ const VictoryModal: React.FC = () => {
             setLoadingLeaderboard(true);
             api.getLeaderboard(1)
                 .then((result) => {
-                    if (result.leaderboard.length > 0) {
+                    if (isMountedRef.current && result.leaderboard.length > 0) {
                         setTopScore(result.leaderboard[0]);
                     }
                 })
@@ -140,7 +173,9 @@ const VictoryModal: React.FC = () => {
                     console.error('Failed to fetch leaderboard:', err);
                 })
                 .finally(() => {
-                    setLoadingLeaderboard(false);
+                    if (isMountedRef.current) {
+                        setLoadingLeaderboard(false);
+                    }
                 });
         }
     }, [status, victoryType]);
@@ -238,7 +273,6 @@ const VictoryModal: React.FC = () => {
             {/* Backdrop */}
             <div
                 className="absolute inset-0 bg-black/90 backdrop-blur-md animate-fade-in"
-                onClick={handleQuit}
             />
 
             {/* Modal */}
@@ -339,16 +373,14 @@ const VictoryModal: React.FC = () => {
                                     Your Best: <span className="text-[var(--text-primary)] font-bold">{highScore.toLocaleString()}</span>
                                 </div>
                             )}
-                            {topScore && (
+                            {loadingLeaderboard ? (
                                 <div className="text-[var(--text-muted)]">
-                                    {loadingLeaderboard ? (
-                                        <span className="animate-pulse">Loading top score...</span>
-                                    ) : (
-                                        <>
-                                            🏆 Global #1: <span className="text-[var(--brand-accent)] font-bold">{topScore.highScore.toLocaleString()}</span>
-                                            <span className="text-[var(--text-muted)]"> by {topScore.username}</span>
-                                        </>
-                                    )}
+                                    <span className="animate-pulse">Loading top score...</span>
+                                </div>
+                            ) : topScore && (
+                                <div className="text-[var(--text-muted)]">
+                                    🏆 Global #1: <span className="text-[var(--brand-accent)] font-bold">{topScore.highScore.toLocaleString()}</span>
+                                    <span className="text-[var(--text-muted)]"> by {topScore.username}</span>
                                 </div>
                             )}
                         </div>

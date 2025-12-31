@@ -1,11 +1,10 @@
 /**
- * 🚀 COSMIC STRIKES - Hybrid Database Manager
+ * 🚀 COSMIC STRIKES - SQLite Database Manager
  * 
- * Automatic MongoDB + SQLite fallback with unified TypeScript API.
- * Detects MongoDB availability and seamlessly switches databases without code changes.
+ * Lightweight SQLite-only database with TypeScript API.
+ * Optimized for local development and small-scale deployments.
  */
 
-import mongoose, { Schema, Document, Model } from 'mongoose';
 import Database from 'better-sqlite3';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
@@ -21,7 +20,7 @@ const __dirname = path.dirname(__filename);
 // Type Definitions
 // ============================================================
 
-export type DatabaseType = 'mongodb' | 'sqlite';
+export type DatabaseType = 'sqlite';
 export type Difficulty = 'easy' | 'normal' | 'hard' | 'insane';
 
 export interface ScoreEntry {
@@ -65,48 +64,19 @@ export interface PublicUser {
 export interface LeaderboardEntry {
   username: string;
   score: number;
+  highScore: number;
   rank: number;
   avatar?: string;
-}
-
-// ============================================================
-// MongoDB Schema Definitions
-// ============================================================
-
-interface IScoreEntry {
-  score: number;
-  level: number;
-  difficulty: Difficulty;
-  accuracy: number;
-  date: Date;
-}
-
-interface IUser extends Document {
-  googleId?: string;
-  email: string;
-  username: string;
-  passwordHash?: string;
-  avatar?: string;
-  highScore: number;
+  userId: string;
   totalGames: number;
-  recentScores: IScoreEntry[];
-  settings: {
-    difficulty: Difficulty;
-    sound: boolean;
-    theme: string;
-  };
-  createdAt: Date;
-  lastPlayed: Date;
 }
 
 // ============================================================
-// Hybrid Database Manager Class
+// SQLite Database Manager Class
 // ============================================================
 
-class HybridDB {
-  private dbType: DatabaseType = 'sqlite';
+class SQLiteDB {
   private sqliteDB?: Database.Database;
-  private UserModel?: Model<IUser>;
   private initialized = false;
   private initPromise?: Promise<void>;
 
@@ -123,79 +93,11 @@ class HybridDB {
   }
 
   private async init(): Promise<void> {
-    const mongoUri = process.env.MONGO_URI;
-
-    if (mongoUri) {
-      try {
-        // Try MongoDB first with timeout
-        await mongoose.connect(mongoUri, {
-          serverSelectionTimeoutMS: 5000, // 5 second timeout
-          connectTimeoutMS: 5000,
-        });
-
-        this.dbType = 'mongodb';
-        this.initMongoSchemas();
-        
-        console.log('✅ Connected to MongoDB');
-        console.log(`   Database: ${mongoose.connection.name}`);
-      } catch (error) {
-        console.log('⚠️ MongoDB unavailable, using SQLite fallback');
-        console.log(`   Reason: ${(error as Error).message}`);
-        this.initSQLite();
-      }
-    } else {
-      console.log('ℹ️ MONGO_URI not set, using SQLite');
-      this.initSQLite();
-    }
-
+    this.initSQLite();
     this.initialized = true;
   }
 
-  private initMongoSchemas(): void {
-    // Score subdocument schema
-    const ScoreSchema = new Schema<IScoreEntry>({
-      score: { type: Number, required: true },
-      level: { type: Number, default: 1 },
-      difficulty: { 
-        type: String, 
-        enum: ['easy', 'normal', 'hard', 'insane'], 
-        default: 'normal' 
-      },
-      accuracy: { type: Number, default: 0 },
-      date: { type: Date, default: Date.now }
-    }, { _id: false });
-
-    // User schema
-    const UserSchema = new Schema<IUser>({
-      googleId: { type: String, unique: true, sparse: true },
-      email: { type: String, lowercase: true, unique: true, required: true },
-      username: { type: String, required: true },
-      passwordHash: { type: String },
-      avatar: { type: String },
-      highScore: { type: Number, default: 0 },
-      totalGames: { type: Number, default: 0 },
-      recentScores: { type: [ScoreSchema], default: [] },
-      settings: {
-        difficulty: { type: String, default: 'normal' },
-        sound: { type: Boolean, default: true },
-        theme: { type: String, default: 'cosmic' }
-      },
-      createdAt: { type: Date, default: Date.now },
-      lastPlayed: { type: Date, default: Date.now }
-    });
-
-    // Indexes for leaderboard queries
-    UserSchema.index({ highScore: -1 });
-    UserSchema.index({ email: 1 });
-    UserSchema.index({ googleId: 1 });
-
-    // Check if model exists to avoid recompilation errors
-    this.UserModel = mongoose.models.User as Model<IUser> || 
-                     mongoose.model<IUser>('User', UserSchema);
-  }
-
   private initSQLite(): void {
-    this.dbType = 'sqlite';
     const dbPath = path.join(__dirname, '..', 'cosmic-strikes.db');
     this.sqliteDB = new Database(dbPath);
 
@@ -234,12 +136,27 @@ class HybridDB {
       )
     `);
 
+    // Create password reset tokens table
+    this.sqliteDB.exec(`
+      CREATE TABLE IF NOT EXISTS password_reset_tokens (
+        id TEXT PRIMARY KEY,
+        userId TEXT NOT NULL,
+        token TEXT UNIQUE NOT NULL,
+        expiresAt INTEGER NOT NULL,
+        used INTEGER DEFAULT 0,
+        createdAt INTEGER NOT NULL,
+        FOREIGN KEY (userId) REFERENCES users (id) ON DELETE CASCADE
+      )
+    `);
+
     // Create indexes
     this.sqliteDB.exec('CREATE INDEX IF NOT EXISTS idx_users_highscore ON users(highScore DESC)');
     this.sqliteDB.exec('CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)');
     this.sqliteDB.exec('CREATE INDEX IF NOT EXISTS idx_users_googleId ON users(googleId)');
     this.sqliteDB.exec('CREATE INDEX IF NOT EXISTS idx_scores_score ON scores(score DESC)');
     this.sqliteDB.exec('CREATE INDEX IF NOT EXISTS idx_scores_userId ON scores(userId)');
+    this.sqliteDB.exec('CREATE INDEX IF NOT EXISTS idx_reset_tokens_token ON password_reset_tokens(token)');
+    this.sqliteDB.exec('CREATE INDEX IF NOT EXISTS idx_reset_tokens_userId ON password_reset_tokens(userId)');
 
     console.log('✅ SQLite database initialized');
     console.log(`   Path: ${dbPath}`);
@@ -249,11 +166,10 @@ class HybridDB {
   // Public API - Status
   // ============================================================
 
-  getStatus(): { type: DatabaseType; initialized: boolean; mongoUri: string } {
+  getStatus(): { type: DatabaseType; initialized: boolean } {
     return {
-      type: this.dbType,
-      initialized: this.initialized,
-      mongoUri: process.env.MONGO_URI ? 'Configured' : 'Not set'
+      type: 'sqlite',
+      initialized: this.initialized
     };
   }
 
@@ -278,48 +194,30 @@ class HybridDB {
     const passwordHash = await bcrypt.hash(password, 12);
     const now = Date.now();
 
-    if (this.dbType === 'mongodb') {
-      const mongoUser = new this.UserModel!({
-        username,
-        email: email.toLowerCase(),
-        passwordHash,
-        highScore: 0,
-        totalGames: 0,
-        recentScores: [],
-        settings: { difficulty: 'normal', sound: true, theme: 'cosmic' },
-        createdAt: new Date(now),
-        lastPlayed: new Date(now)
-      });
+    const userId = uuidv4();
+    const settings: UserSettings = { difficulty: 'normal', sound: true, theme: 'cosmic' };
 
-      await mongoUser.save();
+    const insert = this.sqliteDB!.prepare(`
+      INSERT INTO users (id, username, email, passwordHash, highScore, totalGames, 
+                        recentScores, settings, createdAt, lastPlayed)
+      VALUES (?, ?, ?, ?, 0, 0, '[]', ?, ?, ?)
+    `);
 
-      return this.mongoUserToUser(mongoUser);
-    } else {
-      const userId = uuidv4();
-      const settings: UserSettings = { difficulty: 'normal', sound: true, theme: 'cosmic' };
+    insert.run(userId, username, email.toLowerCase(), passwordHash, 
+               JSON.stringify(settings), now, now);
 
-      const insert = this.sqliteDB!.prepare(`
-        INSERT INTO users (id, username, email, passwordHash, highScore, totalGames, 
-                          recentScores, settings, createdAt, lastPlayed)
-        VALUES (?, ?, ?, ?, 0, 0, '[]', ?, ?, ?)
-      `);
-
-      insert.run(userId, username, email.toLowerCase(), passwordHash, 
-                 JSON.stringify(settings), now, now);
-
-      return {
-        id: userId,
-        username,
-        email: email.toLowerCase(),
-        passwordHash,
-        highScore: 0,
-        totalGames: 0,
-        recentScores: [],
-        settings,
-        createdAt: now,
-        lastPlayed: now
-      };
-    }
+    return {
+      id: userId,
+      username,
+      email: email.toLowerCase(),
+      passwordHash,
+      highScore: 0,
+      totalGames: 0,
+      recentScores: [],
+      settings,
+      createdAt: now,
+      lastPlayed: now
+    };
   }
 
   async createUserWithGoogle(
@@ -331,168 +229,99 @@ class HybridDB {
     await this.waitForInit();
     const now = Date.now();
 
-    if (this.dbType === 'mongodb') {
-      // Check if user exists
-      let mongoUser = await this.UserModel!.findOne({ 
-        $or: [{ googleId }, { email: email.toLowerCase() }] 
-      });
+    // Check if user exists
+    const existing = this.sqliteDB!.prepare(
+      'SELECT * FROM users WHERE googleId = ? OR email = ?'
+    ).get(googleId, email.toLowerCase()) as any;
 
-      if (mongoUser) {
-        // Update Google ID if not set
-        if (!mongoUser.googleId) {
-          mongoUser.googleId = googleId;
-          mongoUser.avatar = avatar || mongoUser.avatar;
-          await mongoUser.save();
-        }
-        return this.mongoUserToUser(mongoUser);
+    if (existing) {
+      // Update Google ID if not set
+      if (!existing.googleId) {
+        this.sqliteDB!.prepare(
+          'UPDATE users SET googleId = ?, avatar = COALESCE(?, avatar) WHERE id = ?'
+        ).run(googleId, avatar, existing.id);
       }
-
-      // Create new user
-      mongoUser = new this.UserModel!({
-        googleId,
-        email: email.toLowerCase(),
-        username,
-        avatar,
-        highScore: 0,
-        totalGames: 0,
-        recentScores: [],
-        settings: { difficulty: 'normal', sound: true, theme: 'cosmic' },
-        createdAt: new Date(now),
-        lastPlayed: new Date(now)
-      });
-
-      await mongoUser.save();
-      return this.mongoUserToUser(mongoUser);
-    } else {
-      // Check if user exists
-      const existing = this.sqliteDB!.prepare(
-        'SELECT * FROM users WHERE googleId = ? OR email = ?'
-      ).get(googleId, email.toLowerCase()) as any;
-
-      if (existing) {
-        // Update Google ID if not set
-        if (!existing.googleId) {
-          this.sqliteDB!.prepare(
-            'UPDATE users SET googleId = ?, avatar = COALESCE(?, avatar) WHERE id = ?'
-          ).run(googleId, avatar, existing.id);
-        }
-        return this.sqliteRowToUser(existing);
-      }
-
-      const userId = uuidv4();
-      const settings: UserSettings = { difficulty: 'normal', sound: true, theme: 'cosmic' };
-
-      const insert = this.sqliteDB!.prepare(`
-        INSERT INTO users (id, googleId, username, email, avatar, highScore, totalGames, 
-                          recentScores, settings, createdAt, lastPlayed)
-        VALUES (?, ?, ?, ?, ?, 0, 0, '[]', ?, ?, ?)
-      `);
-
-      insert.run(userId, googleId, username, email.toLowerCase(), avatar,
-                 JSON.stringify(settings), now, now);
-
-      return {
-        id: userId,
-        googleId,
-        username,
-        email: email.toLowerCase(),
-        avatar,
-        highScore: 0,
-        totalGames: 0,
-        recentScores: [],
-        settings,
-        createdAt: now,
-        lastPlayed: now
-      };
+      return this.sqliteRowToUser(existing);
     }
+
+    const userId = uuidv4();
+    const settings: UserSettings = { difficulty: 'normal', sound: true, theme: 'cosmic' };
+
+    const insert = this.sqliteDB!.prepare(`
+      INSERT INTO users (id, googleId, username, email, avatar, highScore, totalGames, 
+                        recentScores, settings, createdAt, lastPlayed)
+      VALUES (?, ?, ?, ?, ?, 0, 0, '[]', ?, ?, ?)
+    `);
+
+    insert.run(userId, googleId, username, email.toLowerCase(), avatar,
+               JSON.stringify(settings), now, now);
+
+    return {
+      id: userId,
+      googleId,
+      username,
+      email: email.toLowerCase(),
+      avatar,
+      highScore: 0,
+      totalGames: 0,
+      recentScores: [],
+      settings,
+      createdAt: now,
+      lastPlayed: now
+    };
   }
 
   async authenticateUser(email: string, password: string): Promise<User | null> {
     await this.waitForInit();
 
-    if (this.dbType === 'mongodb') {
-      const mongoUser = await this.UserModel!.findOne({ email: email.toLowerCase() });
-      
-      if (!mongoUser || !mongoUser.passwordHash) {
-        return null;
-      }
+    const row = this.sqliteDB!.prepare(
+      'SELECT * FROM users WHERE email = ?'
+    ).get(email.toLowerCase()) as any;
 
-      const valid = await bcrypt.compare(password, mongoUser.passwordHash);
-      if (!valid) return null;
-
-      // Update lastPlayed
-      mongoUser.lastPlayed = new Date();
-      await mongoUser.save();
-
-      return this.mongoUserToUser(mongoUser);
-    } else {
-      const row = this.sqliteDB!.prepare(
-        'SELECT * FROM users WHERE email = ?'
-      ).get(email.toLowerCase()) as any;
-
-      if (!row || !row.passwordHash) {
-        return null;
-      }
-
-      const valid = await bcrypt.compare(password, row.passwordHash);
-      if (!valid) return null;
-
-      // Update lastPlayed
-      this.sqliteDB!.prepare(
-        'UPDATE users SET lastPlayed = ? WHERE id = ?'
-      ).run(Date.now(), row.id);
-
-      return this.sqliteRowToUser(row);
+    if (!row || !row.passwordHash) {
+      return null;
     }
+
+    const valid = await bcrypt.compare(password, row.passwordHash);
+    if (!valid) return null;
+
+    // Update lastPlayed
+    this.sqliteDB!.prepare(
+      'UPDATE users SET lastPlayed = ? WHERE id = ?'
+    ).run(Date.now(), row.id);
+
+    return this.sqliteRowToUser(row);
   }
 
   async getUserById(userId: string): Promise<User | null> {
     await this.waitForInit();
 
-    if (this.dbType === 'mongodb') {
-      const mongoUser = await this.UserModel!.findById(userId);
-      return mongoUser ? this.mongoUserToUser(mongoUser) : null;
-    } else {
-      const row = this.sqliteDB!.prepare(
-        'SELECT * FROM users WHERE id = ?'
-      ).get(userId) as any;
-      return row ? this.sqliteRowToUser(row) : null;
-    }
+    const row = this.sqliteDB!.prepare(
+      'SELECT * FROM users WHERE id = ?'
+    ).get(userId) as any;
+    return row ? this.sqliteRowToUser(row) : null;
   }
 
   async getUserByGoogleId(googleId: string): Promise<User | null> {
     await this.waitForInit();
 
-    if (this.dbType === 'mongodb') {
-      const mongoUser = await this.UserModel!.findOne({ googleId });
-      return mongoUser ? this.mongoUserToUser(mongoUser) : null;
-    } else {
-      const row = this.sqliteDB!.prepare(
-        'SELECT * FROM users WHERE googleId = ?'
-      ).get(googleId) as any;
-      return row ? this.sqliteRowToUser(row) : null;
-    }
+    const row = this.sqliteDB!.prepare(
+      'SELECT * FROM users WHERE googleId = ?'
+    ).get(googleId) as any;
+    return row ? this.sqliteRowToUser(row) : null;
   }
 
   async updateUserSettings(userId: string, settings: Partial<UserSettings>): Promise<boolean> {
     await this.waitForInit();
 
-    if (this.dbType === 'mongodb') {
-      const result = await this.UserModel!.updateOne(
-        { _id: userId },
-        { $set: { settings: { ...settings } } }
-      );
-      return result.modifiedCount > 0;
-    } else {
-      const user = await this.getUserById(userId);
-      if (!user) return false;
+    const user = await this.getUserById(userId);
+    if (!user) return false;
 
-      const newSettings = { ...user.settings, ...settings };
-      this.sqliteDB!.prepare(
-        'UPDATE users SET settings = ? WHERE id = ?'
-      ).run(JSON.stringify(newSettings), userId);
-      return true;
-    }
+    const newSettings = { ...user.settings, ...settings };
+    this.sqliteDB!.prepare(
+      'UPDATE users SET settings = ? WHERE id = ?'
+    ).run(JSON.stringify(newSettings), userId);
+    return true;
   }
 
   // ============================================================
@@ -509,101 +338,60 @@ class HybridDB {
     await this.waitForInit();
     const now = Date.now();
 
-    if (this.dbType === 'mongodb') {
-      const user = await this.UserModel!.findById(userId);
-      if (!user) throw new Error('User not found');
+    const user = await this.getUserById(userId);
+    if (!user) throw new Error('User not found');
 
-      const previousHigh = user.highScore;
-      const newHighScore = score > previousHigh;
+    const previousHigh = user.highScore;
+    const newHighScore = score > previousHigh;
 
-      user.highScore = Math.max(user.highScore, score);
-      user.totalGames += 1;
-      user.lastPlayed = new Date();
+    // Update user stats
+    this.sqliteDB!.prepare(`
+      UPDATE users SET 
+        highScore = MAX(highScore, ?),
+        totalGames = totalGames + 1,
+        lastPlayed = ?
+      WHERE id = ?
+    `).run(score, now, userId);
 
-      // Add to recent scores (keep last 10)
-      user.recentScores.unshift({
-        score,
-        level,
-        difficulty,
-        accuracy,
-        date: new Date()
-      });
-      if (user.recentScores.length > 10) {
-        user.recentScores = user.recentScores.slice(0, 10);
-      }
+    // Add score to scores table
+    const scoreId = uuidv4();
+    this.sqliteDB!.prepare(`
+      INSERT INTO scores (id, userId, score, level, difficulty, accuracy, playedAt)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(scoreId, userId, score, level, difficulty, accuracy, now);
 
-      await user.save();
+    // Update recent scores in user record
+    const recentScores = [...user.recentScores];
+    recentScores.unshift({ score, level, difficulty, accuracy, date: now });
+    if (recentScores.length > 10) recentScores.pop();
 
-      return { newHighScore, previousHigh };
-    } else {
-      const user = await this.getUserById(userId);
-      if (!user) throw new Error('User not found');
+    this.sqliteDB!.prepare(
+      'UPDATE users SET recentScores = ? WHERE id = ?'
+    ).run(JSON.stringify(recentScores), userId);
 
-      const previousHigh = user.highScore;
-      const newHighScore = score > previousHigh;
-
-      // Update user stats
-      this.sqliteDB!.prepare(`
-        UPDATE users SET 
-          highScore = MAX(highScore, ?),
-          totalGames = totalGames + 1,
-          lastPlayed = ?
-        WHERE id = ?
-      `).run(score, now, userId);
-
-      // Add score to scores table
-      const scoreId = uuidv4();
-      this.sqliteDB!.prepare(`
-        INSERT INTO scores (id, userId, score, level, difficulty, accuracy, playedAt)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-      `).run(scoreId, userId, score, level, difficulty, accuracy, now);
-
-      // Update recent scores in user record
-      const recentScores = [...user.recentScores];
-      recentScores.unshift({ score, level, difficulty, accuracy, date: now });
-      if (recentScores.length > 10) recentScores.pop();
-
-      this.sqliteDB!.prepare(
-        'UPDATE users SET recentScores = ? WHERE id = ?'
-      ).run(JSON.stringify(recentScores), userId);
-
-      return { newHighScore, previousHigh };
-    }
+    return { newHighScore, previousHigh };
   }
 
   async getLeaderboard(limit: number = 50): Promise<LeaderboardEntry[]> {
     await this.waitForInit();
 
-    if (this.dbType === 'mongodb') {
-      const users = await this.UserModel!
-        .find({ highScore: { $gt: 0 } })
-        .sort({ highScore: -1 })
-        .limit(limit)
-        .select('username highScore avatar')
-        .lean();
+    const rows = this.sqliteDB!.prepare(`
+      SELECT id, username, highScore, avatar, totalGames
+      FROM users
+      WHERE highScore > 0
+      ORDER BY highScore DESC
+      LIMIT ?
+    `).all(limit) as any[];
 
-      return users.map((user, index) => ({
-        username: user.username,
-        score: user.highScore,
-        rank: index + 1,
-        avatar: user.avatar
-      }));
-    } else {
-      const rows = this.sqliteDB!.prepare(`
-        SELECT username, highScore as score, avatar
-        FROM users
-        WHERE highScore > 0
-        ORDER BY highScore DESC
-        LIMIT ?
-      `).all(limit) as any[];
-
-      return rows.map((row, index) => ({
-        username: row.username,
-        score: row.score,
-        rank: index + 1,
-        avatar: row.avatar
-      }));
-    }
+    return rows.map((row, index) => ({
+      username: row.username,
+      score: row.highScore,
+      highScore: row.highScore,
+      rank: index + 1,
+      avatar: row.avatar,
+      userId: row.id,
+      totalGames: row.totalGames
+    }));
   }
 
   async getUserRank(userId: string): Promise<number | null> {
@@ -612,17 +400,10 @@ class HybridDB {
     const user = await this.getUserById(userId);
     if (!user || user.highScore === 0) return null;
 
-    if (this.dbType === 'mongodb') {
-      const count = await this.UserModel!.countDocuments({
-        highScore: { $gt: user.highScore }
-      });
-      return count + 1;
-    } else {
-      const result = this.sqliteDB!.prepare(`
-        SELECT COUNT(*) as count FROM users WHERE highScore > ?
-      `).get(user.highScore) as { count: number };
-      return result.count + 1;
-    }
+    const result = this.sqliteDB!.prepare(`
+      SELECT COUNT(*) as count FROM users WHERE highScore > ?
+    `).get(user.highScore) as { count: number };
+    return result.count + 1;
   }
 
   // ============================================================
@@ -653,35 +434,127 @@ class HybridDB {
   }
 
   // ============================================================
-  // Private Helpers - Data Conversion
+  // Public API - Password Reset
   // ============================================================
 
-  private mongoUserToUser(mongoUser: IUser): User {
-    return {
-      id: mongoUser._id.toString(),
-      googleId: mongoUser.googleId,
-      username: mongoUser.username,
-      email: mongoUser.email,
-      passwordHash: mongoUser.passwordHash,
-      avatar: mongoUser.avatar,
-      highScore: mongoUser.highScore,
-      totalGames: mongoUser.totalGames,
-      recentScores: mongoUser.recentScores.map(s => ({
-        score: s.score,
-        level: s.level,
-        difficulty: s.difficulty,
-        accuracy: s.accuracy,
-        date: s.date
-      })),
-      settings: {
-        difficulty: mongoUser.settings.difficulty,
-        sound: mongoUser.settings.sound,
-        theme: mongoUser.settings.theme
-      },
-      createdAt: mongoUser.createdAt,
-      lastPlayed: mongoUser.lastPlayed
-    };
+  /**
+   * Generate a password reset token for a user
+   * Returns the token that should be sent to the user's email
+   */
+  async createPasswordResetToken(email: string): Promise<string | null> {
+    await this.waitForInit();
+
+    // Find user by email
+    const stmt = this.sqliteDB!.prepare('SELECT id FROM users WHERE email = ?');
+    const user = stmt.get(email.toLowerCase()) as { id: string } | undefined;
+
+    if (!user) {
+      // Don't reveal if email exists or not (security)
+      return null;
+    }
+
+    // Generate secure random token (32 bytes = 64 hex chars)
+    const token = uuidv4() + uuidv4().replace(/-/g, ''); // 32 char token
+    const now = Date.now();
+    const expiresAt = now + (60 * 60 * 1000); // 1 hour from now
+
+    // Delete any existing unused tokens for this user
+    this.sqliteDB!.prepare('DELETE FROM password_reset_tokens WHERE userId = ? AND used = 0')
+      .run(user.id);
+
+    // Insert new token
+    const insert = this.sqliteDB!.prepare(`
+      INSERT INTO password_reset_tokens (id, userId, token, expiresAt, used, createdAt)
+      VALUES (?, ?, ?, ?, 0, ?)
+    `);
+    insert.run(uuidv4(), user.id, token, expiresAt, now);
+
+    return token;
   }
+
+  /**
+   * Reset user password using a valid token
+   */
+  async resetPasswordWithToken(token: string, newPassword: string): Promise<boolean> {
+    await this.waitForInit();
+
+    const now = Date.now();
+
+    // Find valid token
+    const stmt = this.sqliteDB!.prepare(`
+      SELECT userId, expiresAt, used 
+      FROM password_reset_tokens 
+      WHERE token = ?
+    `);
+    const tokenData = stmt.get(token) as { userId: string; expiresAt: number; used: number } | undefined;
+
+    if (!tokenData) {
+      return false; // Token not found
+    }
+
+    if (tokenData.used === 1) {
+      return false; // Token already used
+    }
+
+    if (tokenData.expiresAt < now) {
+      return false; // Token expired
+    }
+
+    // Hash new password
+    const passwordHash = await bcrypt.hash(newPassword, 12);
+
+    // Update user password
+    const updateUser = this.sqliteDB!.prepare(`
+      UPDATE users 
+      SET passwordHash = ? 
+      WHERE id = ?
+    `);
+    updateUser.run(passwordHash, tokenData.userId);
+
+    // Mark token as used
+    const updateToken = this.sqliteDB!.prepare(`
+      UPDATE password_reset_tokens 
+      SET used = 1 
+      WHERE token = ?
+    `);
+    updateToken.run(token);
+
+    // Clean up expired tokens (housekeeping)
+    this.sqliteDB!.prepare('DELETE FROM password_reset_tokens WHERE expiresAt < ?')
+      .run(now);
+
+    return true;
+  }
+
+  /**
+   * Validate if a reset token is still valid
+   */
+  async validateResetToken(token: string): Promise<boolean> {
+    await this.waitForInit();
+
+    const now = Date.now();
+
+    const stmt = this.sqliteDB!.prepare(`
+      SELECT expiresAt, used 
+      FROM password_reset_tokens 
+      WHERE token = ?
+    `);
+    const tokenData = stmt.get(token) as { expiresAt: number; used: number } | undefined;
+
+    if (!tokenData) {
+      return false;
+    }
+
+    if (tokenData.used === 1 || tokenData.expiresAt < now) {
+      return false;
+    }
+
+    return true;
+  }
+
+  // ============================================================
+  // Private Helpers - Data Conversion
+  // ============================================================
 
   private sqliteRowToUser(row: any): User {
     return {
@@ -717,4 +590,4 @@ class HybridDB {
 }
 
 // Export singleton instance
-export const db = new HybridDB();
+export const db = new SQLiteDB();

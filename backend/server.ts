@@ -201,6 +201,91 @@ app.get('/api/auth/me', authGuard, async (req: AuthRequest, res: Response) => {
   }
 });
 
+// Request password reset (generates token)
+app.post('/api/auth/forgot-password', async (req: Request, res: Response) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      res.status(400).json({ error: 'Email is required' });
+      return;
+    }
+
+    // Generate reset token
+    const token = await db.createPasswordResetToken(email);
+
+    // Note: In production, you would send this token via email
+    // For now, we return it in the response for development/demo purposes
+    if (token) {
+      // TODO: Send email with reset link containing token
+      console.log(`🔑 Password reset token for ${email}: ${token}`);
+      console.log(`   Reset URL: http://localhost:5174/reset-password?token=${token}`);
+    }
+
+    // Always return success to not reveal if email exists (security best practice)
+    res.json({ 
+      ok: true, 
+      message: 'If that email exists, a password reset link has been sent',
+      // Include token in response for development only
+      ...(process.env.NODE_ENV !== 'production' && token ? { token } : {})
+    });
+  } catch (error) {
+    console.error('Forgot password error:', error);
+    res.status(500).json({ error: 'Failed to process password reset request' });
+  }
+});
+
+// Validate reset token
+app.get('/api/auth/validate-reset-token/:token', async (req: Request, res: Response) => {
+  try {
+    const { token } = req.params;
+
+    if (!token) {
+      res.status(400).json({ error: 'Token is required' });
+      return;
+    }
+
+    const isValid = await db.validateResetToken(token);
+
+    res.json({ valid: isValid });
+  } catch (error) {
+    console.error('Validate token error:', error);
+    res.status(500).json({ error: 'Failed to validate token' });
+  }
+});
+
+// Reset password with token
+app.post('/api/auth/reset-password', async (req: Request, res: Response) => {
+  try {
+    const { token, password } = req.body;
+
+    if (!token || !password) {
+      res.status(400).json({ error: 'Token and new password are required' });
+      return;
+    }
+
+    if (password.length < 6) {
+      res.status(400).json({ error: 'Password must be at least 6 characters' });
+      return;
+    }
+
+    const success = await db.resetPasswordWithToken(token, password);
+
+    if (!success) {
+      res.status(400).json({ error: 'Invalid or expired reset token' });
+      return;
+    }
+
+    res.json({ 
+      ok: true, 
+      message: 'Password has been reset successfully' 
+    });
+  } catch (error) {
+    console.error('Reset password error:', error);
+    res.status(500).json({ error: 'Failed to reset password' });
+  }
+});
+
 // Google OAuth callback (simplified - integrate with passport if needed)
 app.post('/api/auth/google', async (req: Request, res: Response) => {
   try {
@@ -388,6 +473,9 @@ app.listen(port, async () => {
   console.log('   POST /api/auth/login      - Login');
   console.log('   POST /api/auth/logout     - Logout');
   console.log('   GET  /api/auth/me         - Get current user');
+  console.log('   POST /api/auth/forgot-password - Request password reset');
+  console.log('   GET  /api/auth/validate-reset-token/:token - Validate reset token');
+  console.log('   POST /api/auth/reset-password - Reset password with token');
   console.log('   POST /api/scores          - Submit score');
   console.log('   GET  /api/scores/leaderboard - Get leaderboard');
   console.log('   GET  /api/db-status       - Database status');

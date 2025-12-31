@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useAuth } from '../../hooks/useAuth';
+import ForgotPasswordModal from './ForgotPasswordModal';
 
 interface LoginModalProps {
   isOpen: boolean;
@@ -11,9 +12,10 @@ interface LoginModalProps {
 
 const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose, onSuccess, initialMode = 'login' }) => {
   const { login, register, logout, error, status, clearAuthError, isAuthenticated, user } = useAuth();
-  
+
   const [mode, setMode] = useState<'login' | 'register'>(initialMode);
   const [isAnimating, setIsAnimating] = useState(false);
+  const [showForgotPassword, setShowForgotPassword] = useState(false);
   const [formData, setFormData] = useState({
     username: '',
     email: '',
@@ -101,7 +103,7 @@ const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose, onSuccess, ini
         setValidationError('Email and password are required');
         return;
       }
-      
+
       await login(formData.email, formData.password);
     }
   };
@@ -122,9 +124,9 @@ const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose, onSuccess, ini
 
   const modalContent = (
     <div className={`fixed inset-0 flex items-center justify-center p-4 overflow-y-auto transition-opacity duration-300 ${isOpen ? 'opacity-100' : 'opacity-0 pointer-events-none'}`} style={{ zIndex: 99999 }}>
-      
+
       {/* 🌑 BACKDROP */}
-      <div 
+      <div
         className="fixed inset-0 bg-black/80 backdrop-blur-md transition-all duration-300"
         style={{ zIndex: 99998 }}
         onClick={onClose}
@@ -133,17 +135,17 @@ const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose, onSuccess, ini
 
       {/* 🚀 MODAL CONTENT */}
       <div className={`relative w-full max-w-[24rem] my-auto transform transition-all duration-300 ${isOpen ? 'scale-100 translate-y-0' : 'scale-95 translate-y-4'}`} style={{ zIndex: 99999 }}>
-        
+
         {/* Glow Effect */}
         <div className="absolute -inset-1 bg-gradient-to-r from-[var(--brand-primary)] to-[var(--brand-accent)] rounded-[var(--radius-2xl)] opacity-20 blur-xl animate-pulse" />
 
         <div className="relative bg-[var(--bg-surface)] border border-[var(--border-primary)] rounded-[var(--radius-2xl)] shadow-2xl overflow-hidden">
-          
+
           {/* Top Bar */}
           <div className="absolute top-0 inset-x-0 h-1.5 bg-[var(--gradient-primary)]" />
-          
+
           {/* Close Button */}
-          <button 
+          <button
             onClick={onClose}
             className="absolute top-4 right-4 p-2 text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] rounded-full transition-colors z-20"
             aria-label="Close Modal"
@@ -152,7 +154,7 @@ const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose, onSuccess, ini
           </button>
 
           <div className="p-6 sm:p-8 relative z-10">
-            
+
             {/* HEADER */}
             <div className="text-center mb-6 relative">
               <div className="absolute inset-0 bg-[var(--brand-primary)] opacity-10 blur-[40px] rounded-full" />
@@ -165,8 +167,8 @@ const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose, onSuccess, ini
                 {mode === 'login' ? 'WELCOME BACK' : 'JOIN THE FLEET'}
               </h2>
               <p className="text-sm text-[var(--text-secondary)] leading-relaxed">
-                {mode === 'login' 
-                  ? 'Sign in to sync your scores' 
+                {mode === 'login'
+                  ? 'Sign in to sync your scores'
                   : 'Create your pilot account'
                 }
               </p>
@@ -227,6 +229,17 @@ const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose, onSuccess, ini
                   className="w-full px-4 py-3 rounded-xl bg-[var(--bg-primary)] border border-[var(--border-primary)] text-white placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--brand-primary)] focus:ring-1 focus:ring-[var(--brand-primary)] transition-all"
                   disabled={isLoading}
                 />
+                {mode === 'login' && (
+                  <div className="text-right mt-2">
+                    <button
+                      type="button"
+                      onClick={() => setShowForgotPassword(true)}
+                      className="text-xs text-[var(--text-muted)] hover:text-[var(--brand-primary)] transition-colors font-medium"
+                    >
+                      Forgot Password?
+                    </button>
+                  </div>
+                )}
               </div>
 
               {mode === 'register' && (
@@ -288,7 +301,7 @@ const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose, onSuccess, ini
             </div>
 
             {/* GUEST BUTTON */}
-            <button 
+            <button
               onClick={handleGuestPlay}
               disabled={isLoading}
               className="group w-full py-3 rounded-xl border border-[var(--border-primary)] bg-transparent text-[var(--text-primary)] font-bold hover:bg-[var(--bg-tertiary)] hover:border-[var(--brand-primary)] hover:text-white transition-all duration-300 flex items-center justify-center gap-2 focus-ring disabled:opacity-50"
@@ -298,7 +311,7 @@ const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose, onSuccess, ini
               </span>
               <span>Guest Quick Play</span>
             </button>
-            
+
             <p className="mt-3 text-xs text-[var(--text-muted)] leading-tight text-center">
               *Guest progress is stored locally and won't sync to leaderboards.
             </p>
@@ -310,7 +323,21 @@ const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose, onSuccess, ini
   );
 
   // Use portal to render modal at the document body level, ensuring it's above everything
-  return createPortal(modalContent, document.body);
+  return (
+    <>
+      {createPortal(modalContent, document.body)}
+
+      {/* Forgot Password Modal */}
+      <ForgotPasswordModal
+        isOpen={showForgotPassword}
+        onClose={() => setShowForgotPassword(false)}
+        onSuccess={() => {
+          setShowForgotPassword(false);
+          // Optionally show a success message in the login modal
+        }}
+      />
+    </>
+  );
 };
 
 export default LoginModal;
